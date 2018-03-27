@@ -612,23 +612,40 @@ class SchedulerJob(BaseJob):
             TI.dag_id == dag.dag_id,
             TI.task_id == sq.c.task_id,
             TI.execution_date == sq.c.max_ti,
-        ).all()
+            ).all()
 
+        # How to differentiate backfill tasks for non-backfill?
+        # Should only apply SLA to most recent task and not past
+
+        # max_tis => all tasks that match the most recent SUCCESS TASK
         ts = datetime.utcnow()
         SlaMiss = models.SlaMiss
+        self.log.info("Found the following task instances missing SLA from DB {max_tis}".format(max_tis=max_tis))
         for ti in max_tis:
             task = dag.get_task(ti.task_id)
-            dttm = ti.execution_date
-            if task.sla:
+            dttm = ti.execution_date # 2018-01-01T00:00:00
+
+            if task.sla: # 2018-01-01T01:00:00
                 dttm = dag.following_schedule(dttm)
-                while dttm < datetime.utcnow():
-                    following_schedule = dag.following_schedule(dttm)
-                    if following_schedule + task.sla < datetime.utcnow():
-                        session.merge(models.SlaMiss(
+                self.log.info("Following execution date found: {dttm}".format(dttm=dttm))
+                # Potential SLA miss if the current time is greater than the next run time
+                # This should not be based on the current time but instead based on the runtime
+                # Could be 1) backfill 2) dag that couldn't process before interval (another case that would be a problem)
+                # I don't like that this is non-determinant
+                while dttm < datetime.utcnow(): # loop
+
+                    # following_schedule = dag.following_schedule(dttm) # 2018-01-01T02:00:00
+                    self.log.info("Looping and following_schedule: {following_schedule}".format(following_schedule=dttm))
+                    self.log.info("Checking {check_schedule} < {current_time}".format(check_schedule=(dttm + task.sla), current_time=datetime.utcnow()))
+                    if dttm + task.sla < datetime.utcnow(): # 2018-01-01T02:00:00 + 1 hour BEFORE now => SLA MISS
+                        sla_miss = models.SlaMiss(
                             task_id=ti.task_id,
                             dag_id=ti.dag_id,
                             execution_date=dttm,
-                            timestamp=ts))
+                            timestamp=ts)
+                        session.merge(sla_miss)
+                        self.log.info("Adding sla_miss {sla_miss}".format(sla_miss=sla_miss))
+                    # 2018-01-01T03:00:00
                     dttm = dag.following_schedule(dttm)
         session.commit()
 
