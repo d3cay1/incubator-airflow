@@ -672,8 +672,11 @@ class SchedulerJob(BaseJob):
             if dag.sla_miss_callback:
                 # Execute the alert callback
                 self.log.info(' --------------> ABOUT TO CALL SLA MISS CALL BACK ')
-                dag.sla_miss_callback(dag, task_list, blocking_task_list, slas, blocking_tis)
-                notification_sent = True
+                try:
+                    dag.sla_miss_callback(dag, task_list, blocking_task_list, slas, blocking_tis)
+                    notification_sent = True
+                except Exception:
+                    self.log.exception("Could not call sla_miss_callback for DAG %s", dag.dag_id)
             email_content = """\
             Here's a list of tasks that missed their SLAs:
             <pre><code>{task_list}\n<code></pre>
@@ -691,12 +694,15 @@ class SchedulerJob(BaseJob):
                         if email not in emails:
                             emails.append(email)
             if emails and len(slas):
-                send_email(
-                    emails,
-                    "[airflow] SLA miss on DAG=" + dag.dag_id,
-                    email_content)
-                email_sent = True
-                notification_sent = True
+                try:
+                    send_email(
+                        emails,
+                        "[airflow] SLA miss on DAG=" + dag.dag_id,
+                        email_content)
+                    email_sent = True
+                    notification_sent = True
+                except Exception:
+                    self.log.exception("Could not send SLA Miss email notification for DAG %s", dag.dag_id)
             # If we sent any notification, update the sla_miss table
             if notification_sent:
                 for sla in slas:
@@ -1389,7 +1395,11 @@ class SchedulerJob(BaseJob):
             if dag_run:
                 self.log.info("Created %s", dag_run)
             self._process_task_instances(dag, tis_out)
-            self.manage_slas(dag)
+            # Don't allow managing SLAs to cause problems with scheduling DAGs
+            try:
+                self.manage_slas(dag)
+            except Exception:
+                self.log.exception("Could not manage SLA for DAG %s", dag.dag_id)
 
         models.DagStat.update([d.dag_id for d in dags])
 
